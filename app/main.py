@@ -1,17 +1,21 @@
-from fastapi import FastAPI
-import os
-from dotenv import load_dotenv
-
+from fastapi import FastAPI, Depends
 from sqlalchemy import (
     Column,
     Integer,
     create_engine,
 ) 
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from fastapi_storages import S3Storage
 from fastapi_storages.integrations.sqlalchemy import FileType
-
 from sqladmin import Admin, ModelView
+import boto3
+from botocore.exceptions import ClientError
+import logging
+import os
+from dotenv import load_dotenv
+from pathlib import Path
+from fastapi_storages.utils import secure_filename
+
 
 """
 All of these params below should be in a .env file loaded with load_dotenv()
@@ -24,6 +28,8 @@ AWS_S3_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
 AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")
 AWS_DEFAULT_ACL = os.getenv("AWS_DEFAULT_ACL")
 AWS_S3_USE_SSL = os.getenv("AWS_S3_USE_SSL")
+REGION_NAME = os.getenv("REGION_NAME")
+ENDPOINT_URL_DEFAULT = os.getenv("ENDPOINT_URL_DEFAULT")
 """
 
 
@@ -39,6 +45,7 @@ AWS_S3_BUCKET_NAME = "MY_AWS_S3_BUCKET_NAME"
 AWS_S3_ENDPOINT_URL = "MY_AWS_S3_ENDPOINT_URL"
 AWS_DEFAULT_ACL = "AWS_DEFAULT_ACL"
 AWS_S3_USE_SSL = "AWS_S3_USE_SSL"
+REGION_NAME = "MY_REGION_NAME"
 
 MY_DB_NAME = "s3_example_db"
 SQLALCHEMY_DATABASE_URL = 'sqlite:///' + MY_DB_NAME
@@ -50,12 +57,19 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 Base.metadata.create_all(bind=engine)
 
+
+# Dependencies
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 # create FastAPI
 app = FastAPI()
 
-@app.get("/")
-async def root():
-    return {"message": "Welcome to S3 example"}
 
 # create
 admin_app = FastAPI()
@@ -107,3 +121,51 @@ class VideoAdmin(ModelView, model=Video):
 admin.add_view(ImageAdmin)
 admin.add_view(VideoAdmin)
 
+"""
+create your boto3 client
+"""
+s3 = boto3.client(
+    service_name ="s3",
+    endpoint_url = AWS_S3_ENDPOINT_URL,
+    aws_access_key_id = AWS_ACCESS_KEY_ID,
+    aws_secret_access_key = AWS_SECRET_ACCESS_KEY,
+    region_name=REGION_NAME, # Must be one of: wnam, enam, weur, eeur, apac, auto
+)
+
+def create_presigned_url(bucket_name, object_name):
+    # Generate a presigned URL for the S3 object
+    expiration=15
+    try:
+        response = s3.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': bucket_name,
+                'Key': object_name,
+                },
+            ExpiresIn=expiration)
+    except ClientError as e:
+        logging.error(e)
+        return None
+    return response
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to S3 example"}
+
+@app.get("/get_videos/")
+def get_videos(db: Session = Depends(get_db)):
+    videos = db.query(Video).all()
+    for video in videos:
+        """
+        We are changing the VideoUrl since it gives us the full path pf the file inside the bucket
+        This will work only if the bucket is public.
+        Then you don't need to create a presigned url
+        You can just return the videos
+        
+        videos = db.query(Video).all()
+        return videos
+        """
+        obj_name = video.VideoUrl[str(video.VideoUrl).rfind("/")+1: len(str(video.VideoUrl))]
+        # print(obj_name)
+        video.VideoUrl = create_presigned_url(AWS_S3_BUCKET_NAME, obj_name)
+    return videos
