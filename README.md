@@ -161,7 +161,7 @@ def get_videos(db: Session = Depends(get_db)):
     videos = db.query(Video).all()
     for video in videos:
         """
-        We are changing the VideoUrl since it gives us the full path pf the file inside the bucket
+        We are changing the VideoUrl since it gives us the full path of the file inside the bucket
         This will work only if the bucket is public.
         Then you don't need to create a presigned url
         You can just return the videos
